@@ -1,1 +1,1 @@
-gcc [main.cpp src/my_class.cpp] [-std=c++23 -Wall -Wextra -Werror] project
+g++ [test/main.cpp] [-std=c++23 -Wall -Wextra -Werror] project
