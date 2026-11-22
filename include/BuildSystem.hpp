@@ -48,7 +48,9 @@ public:
     int link();
 
     void get_object_file(const std::string& file, const std::string& save_to);
-    std::vector<char*> get_command(const std::string& file, const std::string& save_to);
+    std::vector<std::string> get_command(const std::string& file, const std::string& save_to);
+    std::vector<char*> get_argv(const std::vector<std::string>& v);
+    int exec_command(const std::vector<char*>& args);
 
     // Helpers
     // const std::string save_to get_save_to_path(const std::string

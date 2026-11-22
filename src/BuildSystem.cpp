@@ -4,6 +4,7 @@
 inline constexpr std::string BUILD_FILE_NAME = "ybs.txt";
 inline constexpr std::string BUILD_DIR_NAME = "bs";
 inline constexpr std::string INTERMEDIATE_DIR_NAME = "intermediate";
+inline constexpr std::string FULL_INTERMEDIATE_PATH = BUILD_DIR_NAME + '/' + INTERMEDIATE_DIR_NAME;
 
 inline constexpr std::string GET_OBJECT_TAG = "-c";
 inline constexpr std::string RENAME_TAG = "-o";
@@ -49,8 +50,7 @@ int BuildSystem::init() {
 }
 
 int BuildSystem::init_build_dir() {
-    std::string path = BUILD_DIR_NAME + '/' + INTERMEDIATE_DIR_NAME;
-    std::filesystem::path dir_path = path;
+    std::filesystem::path dir_path = FULL_INTERMEDIATE_PATH;
     bool flag = std::filesystem::create_directory(dir_path);
 
     return flag;
@@ -95,16 +95,14 @@ int BuildSystem::build() {
 
 int BuildSystem::compile() {
     const std::vector<std::string>& files = cs_.get_files();
-    // const std::vector<std::string>& pure_names = cs_.get_pure_file_names();
+    // for (size_t i = 0; i < files.size(); ++i) {
+    //     std::cout << "file: " << files[i] << std::endl;
+    // }
     std::vector<int> is_done(files.size(), 0);
     std::vector<int> process_ids(files.size(), 0); // to see which process compiles which file
 
     long max_processes = sysconf(_SC_CHILD_MAX);
     (void)max_processes;
-
-    std::string str = std::to_string(0);
-    const std::string save_to = BUILD_DIR_NAME + '/' + INTERMEDIATE_DIR_NAME + '/' + str + ".o";
-    get_command(files[0], save_to);
 
     while (std::accumulate(is_done.begin(), is_done.end(), 0) != static_cast<int>(files.size())) {
         for (size_t i = 0; i < files.size(); ++i) {
@@ -121,12 +119,14 @@ int BuildSystem::compile() {
 
                 // only runs if execvp fails
                 perror("execvp");
+                std::cout << "ERROR?\n";
                 _exit(127);
 
             }
             else if (pid < 0)
             {
                 // Fork failed.
+                std::cerr << "Fork fail\n";
             }
             else if (pid > 0)
             {
@@ -134,6 +134,7 @@ int BuildSystem::compile() {
                 process_ids[i] = static_cast<int>(pid);
             }
         }
+        std::cout << " Waiting for children to finish\n";
 
 
         for (size_t i = 0; i < files.size(); ++i) {
@@ -142,6 +143,7 @@ int BuildSystem::compile() {
             if (pid > 0) {
                 // Process has done its job successfully.
                 is_done[i] = 1;
+                std::cout << "process " << static_cast<int>(pid) << " did its job successfully\n";
             }
             process_ids[i] = 0;
         }
@@ -153,46 +155,98 @@ int BuildSystem::compile() {
 }
 
 void BuildSystem::get_object_file(const std::string& file, const std::string& save_to) {
-    std::vector<char*> command = get_command(file, save_to);
+    std::vector<std::string> command = get_command(file, save_to);
+    std::vector<char*> args = get_argv(command);
 
-    for (size_t i = 0; i < command.size(); ++i) {
-        write(STDOUT_FILENO, command[i], strlen(command[i]));
-        write(STDOUT_FILENO, "\n", 1);
-    }
-    execvp(command[0], command.data());
+    // for (size_t i = 0; i < command.size(); ++i) {
+    //     write(STDOUT_FILENO, command[i], strlen(command[i]));
+    //     write(STDOUT_FILENO, "\n", 1);
+    // }
+    execvp(args[0], args.data());
 }
 
-std::vector<char*> BuildSystem::get_command(const std::string& file, const std::string& save_to) {
-    std::vector<char*> command;
-    command.push_back(const_cast<char*>(cs_.get_compiler_name().data()));
+std::vector<std::string> BuildSystem::get_command(const std::string& file, const std::string& save_to) {
+    std::vector<std::string> command;
+    command.push_back(cs_.get_compiler_name());
 
-    command.push_back(const_cast<char*>(file.data()));
+    command.push_back(file);
 
     const std::vector<std::string>& options = cs_.get_compiler_options();
-    for (size_t i = 0; i < options.size(); ++i) {
-        command.push_back(const_cast<char*>(options[i].data()));
-    }
+    command.insert(command.end(), options.begin(), options.end());
 
-    command.push_back(const_cast<char*>(GET_OBJECT_TAG.data()));
+    command.push_back(GET_OBJECT_TAG);
 
-    command.push_back(const_cast<char*>(RENAME_TAG.data()));
+    command.push_back(RENAME_TAG);
 
     // const std::string save_to = BUILD_DIR_NAME + '/' + INTERMEDIATE_DIR_NAME + '/' + pure_name + ".o";
-    std::cout << "save_to : " << save_to;
-    command.push_back(const_cast<char*>(save_to.data()));
+    // std::cout << "save_to : " << save_to;
+    command.push_back(save_to);
 
-    command.push_back(nullptr);
 
     std::cout<< "COMMAND: ";
     for (size_t i = 0; i < command.size(); ++i) {
         std::cout << command[i] << ", ";
     }
+    std::cout << std::endl;
+
+    return command;
+}
+
+std::vector<char*> BuildSystem::get_argv(const std::vector<std::string>& v) {
+    std::vector<char*> command(v.size());
+
+    for (size_t i = 0; i < command.size(); ++i) {
+        command[i] = const_cast<char*>(v[i].data());
+    }
+    command.push_back(nullptr);
 
     return command;
 }
 
 
 int BuildSystem::link() {
+    std::filesystem::path p = FULL_INTERMEDIATE_PATH;
+    std::filesystem::directory_iterator it(p);
+
+    std::vector<std::string> object_files;
+    while (it != std::filesystem::end(it)) {
+        object_files.push_back((*it).path().string());
+        ++it;
+    }
+
+    for (size_t i = 0; i < object_files.size(); ++i) {
+        std::cout << object_files[i] << ", ";
+    }
+
+    std::vector<std::string> command;
+    command.push_back(cs_.get_compiler_name());
+
+    command.insert(command.end(), object_files.begin(), object_files.end());
+
+    command.push_back(RENAME_TAG);
+
+    command.push_back(cs_.get_exec_name());
+
+    exec_command(get_argv(command));
+
+    return 0;
+}
+
+int BuildSystem::exec_command(const std::vector<char*>& args) {
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        // child
+        execvp(args[0], args.data());
+
+        // if runs to this point then an error.
+    } else if (pid < 0) {
+        perror("fork");
+    } else {
+        int status;
+        wait(&status);
+        return WIFEXITED(status) && WEXITSTATUS(status);
+    }
 
     return 0;
 }
