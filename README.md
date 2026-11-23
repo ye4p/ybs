@@ -19,15 +19,17 @@ It could look like this:
 gcc [main.cpp src/my_class.cpp] [-std=c++23 -Wall -Wextra -Werror] project
 ```
 
+Unlike cmake it saves executable in your current directory not in the build folder.
 
 
 ybs build
  - this will build the project
 
 ybs run
- - build and run
+ - build and run [args...]
 
 ybs test
  - build and run tests(if you set them up)
 
+running ybs with no arguments will run build by default.
 

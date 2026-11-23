@@ -7,8 +7,18 @@
 
 #include <unistd.h> // for posix stuff
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <cstring>
 
+
+struct Node {
+    std::string val;
+    std::vector<Node*> deps;
+
+    Node() {}
+    Node(const std::string& v) : val(v)
+};
 
 class CompilationSettings {
 public:
@@ -33,6 +43,8 @@ private:
     std::string exec_name_;
 
     std::vector<std::string> pure_file_names_;
+
+    std::vector<Node*> file_dependencies;
 };
 
 
@@ -47,8 +59,12 @@ public:
     int compile();
     int link();
 
-    void get_object_file(const std::string& file, const std::string& save_to);
-    std::vector<std::string> get_command(const std::string& file, const std::string& save_to);
+    int next();
+    int check();
+    void create_dependency_graph();
+
+    void get_object_file(const std::string& file, const std::string& save_to, const std::string& dependency_file_name);
+    std::vector<std::string> get_command(const std::string& file, const std::string& save_to, const std::string& dependency_file_name);
     std::vector<char*> get_argv(const std::vector<std::string>& v);
     int exec_command(const std::vector<char*>& args);
 
@@ -57,6 +73,8 @@ public:
 private:
     std::vector<std::string> argv_;
     size_t argc_;
+
+    std::vector<std::string> files_;
 
     CompilationSettings cs_;
 };

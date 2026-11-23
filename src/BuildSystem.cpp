@@ -4,10 +4,14 @@
 inline constexpr std::string BUILD_FILE_NAME = "ybs.txt";
 inline constexpr std::string BUILD_DIR_NAME = "bs";
 inline constexpr std::string INTERMEDIATE_DIR_NAME = "intermediate";
+inline constexpr std::string DEPENDENCY_DIR_NAME = "dep";
 inline constexpr std::string FULL_INTERMEDIATE_PATH = BUILD_DIR_NAME + '/' + INTERMEDIATE_DIR_NAME;
+inline constexpr std::string FULL_DEPENDENCY_PATH = BUILD_DIR_NAME + '/' + DEPENDENCY_DIR_NAME;
 
-inline constexpr std::string GET_OBJECT_TAG = "-c";
-inline constexpr std::string RENAME_TAG = "-o";
+inline constexpr std::string COMPILER_NO_LINKING_FLAG = "-c";
+inline constexpr std::string COMPILER_NAME_OBJECT_FILE_FLAG = "-o";
+inline constexpr std::string COMPILER_DEPENDENCY_GENERATION_FLAG = "-MMD";
+inline constexpr std::string COMPILER_NAME_DEPENDENCY_FILE_FLAG = "-MF";
 
 
 BuildSystem::BuildSystem(int argc, char** argv) : argc_(argc) {
@@ -24,7 +28,10 @@ BuildSystem::BuildSystem(int argc, char** argv) : argc_(argc) {
 }
 
 void BuildSystem::run() {
+    check(); // we need to see if files are changed and only compile those (and files that depend on them)
+    create_dependency_graph();
     build();
+    next(); // if has option such as run, do that.
 }
 
 int BuildSystem::init() {
@@ -39,10 +46,13 @@ int BuildSystem::init() {
     // Check if intermediate folder with build files is already created, if not - create it.
     std::filesystem::path dir_path = BUILD_DIR_NAME;
 
-    bool exists = std::filesystem::create_directory(dir_path);
+    bool created = std::filesystem::create_directory(dir_path);
 
-    if (!exists) {
-        init_build_dir();
+    if (created) {
+        int dir_init_status = init_build_dir();
+        if (!dir_init_status) {
+            std::cerr << "Error creating subdirectories\n";
+        }
     }
 
 
@@ -50,8 +60,11 @@ int BuildSystem::init() {
 }
 
 int BuildSystem::init_build_dir() {
-    std::filesystem::path dir_path = FULL_INTERMEDIATE_PATH;
-    bool flag = std::filesystem::create_directory(dir_path);
+    std::filesystem::path inter_path = FULL_INTERMEDIATE_PATH;
+    std::filesystem::path dep_path = FULL_DEPENDENCY_PATH;
+
+    bool flag = std::filesystem::create_directory(inter_path);
+    flag &= std::filesystem::create_directory(dep_path);
 
     return flag;
 }
@@ -94,18 +107,21 @@ int BuildSystem::build() {
 }
 
 int BuildSystem::compile() {
-    const std::vector<std::string>& files = cs_.get_files();
+
+    size_t size = files_.size();
+
     // for (size_t i = 0; i < files.size(); ++i) {
     //     std::cout << "file: " << files[i] << std::endl;
     // }
-    std::vector<int> is_done(files.size(), 0);
-    std::vector<int> process_ids(files.size(), 0); // to see which process compiles which file
+    std::vector<int> is_done(size, 0);
+    std::vector<int> process_ids(size, 0); // to see which process compiles which file
 
     long max_processes = sysconf(_SC_CHILD_MAX);
-    (void)max_processes;
 
-    while (std::accumulate(is_done.begin(), is_done.end(), 0) != static_cast<int>(files.size())) {
-        for (size_t i = 0; i < files.size(); ++i) {
+    while (std::accumulate(is_done.begin(), is_done.end(), 0) != static_cast<int>(size)) {
+        size_t launched_processes{};
+        for (size_t i = 0; i < static_cast<size_t>(max_processes); ++i) {
+            if (i >= size) break; // already have enough processes running.
             if (is_done[i]) continue;
 
             pid_t pid = fork();
@@ -114,8 +130,9 @@ int BuildSystem::compile() {
             {
                 // Child process
                 std::string str = std::to_string(i);
-                const std::string save_to = BUILD_DIR_NAME + '/' + INTERMEDIATE_DIR_NAME + '/' + str + ".o";
-                get_object_file(files[i], save_to);
+                const std::string save_to = FULL_INTERMEDIATE_PATH + '/' + str + ".o";
+                const std::string dependency_file_name = FULL_DEPENDENCY_PATH + '/' + str + ".d";
+                get_object_file(files_[i], save_to, dependency_file_name);
 
                 // only runs if execvp fails
                 perror("execvp");
@@ -132,12 +149,13 @@ int BuildSystem::compile() {
             {
                 // Parent process.
                 process_ids[i] = static_cast<int>(pid);
+                ++launched_processes;
             }
         }
         std::cout << " Waiting for children to finish\n";
 
 
-        for (size_t i = 0; i < files.size(); ++i) {
+        for (size_t i = 0; i < launched_processes; ++i) {
             if (process_ids[i] == 0) continue;
             pid_t pid = waitpid(process_ids[i], nullptr, 0);
             if (pid > 0) {
@@ -154,8 +172,8 @@ int BuildSystem::compile() {
     return 0;
 }
 
-void BuildSystem::get_object_file(const std::string& file, const std::string& save_to) {
-    std::vector<std::string> command = get_command(file, save_to);
+void BuildSystem::get_object_file(const std::string& file, const std::string& save_to, const std::string& dependency_file_name) {
+    std::vector<std::string> command = get_command(file, save_to, dependency_file_name);
     std::vector<char*> args = get_argv(command);
 
     // for (size_t i = 0; i < command.size(); ++i) {
@@ -165,18 +183,23 @@ void BuildSystem::get_object_file(const std::string& file, const std::string& sa
     execvp(args[0], args.data());
 }
 
-std::vector<std::string> BuildSystem::get_command(const std::string& file, const std::string& save_to) {
+std::vector<std::string> BuildSystem::get_command(const std::string& file, const std::string& save_to, const std::string& dependency_file_name) {
     std::vector<std::string> command;
     command.push_back(cs_.get_compiler_name());
+
+    // Generate dependency file
+    command.push_back(COMPILER_DEPENDENCY_GENERATION_FLAG);
+    command.push_back(COMPILER_NAME_DEPENDENCY_FILE_FLAG);
+    command.push_back(dependency_file_name);
 
     command.push_back(file);
 
     const std::vector<std::string>& options = cs_.get_compiler_options();
     command.insert(command.end(), options.begin(), options.end());
 
-    command.push_back(GET_OBJECT_TAG);
+    command.push_back(COMPILER_NO_LINKING_FLAG);
 
-    command.push_back(RENAME_TAG);
+    command.push_back(COMPILER_NAME_OBJECT_FILE_FLAG);
 
     // const std::string save_to = BUILD_DIR_NAME + '/' + INTERMEDIATE_DIR_NAME + '/' + pure_name + ".o";
     // std::cout << "save_to : " << save_to;
@@ -223,7 +246,7 @@ int BuildSystem::link() {
 
     command.insert(command.end(), object_files.begin(), object_files.end());
 
-    command.push_back(RENAME_TAG);
+    command.push_back(COMPILER_NAME_OBJECT_FILE_FLAG);
 
     command.push_back(cs_.get_exec_name());
 
@@ -251,8 +274,87 @@ int BuildSystem::exec_command(const std::vector<char*>& args) {
     return 0;
 }
 
+int BuildSystem::next() {
+    if (argc_ == 1 || argv_[1] == "build") {
+        return 0;
+    }
+
+    if (argv_[1] == "run") {
+        std::vector<std::string> command;
+        std::string executable = "./" + cs_.get_exec_name();
+
+        command.push_back(executable);
+
+        auto it = argv_.begin();
+        ++it;
+        ++it;
+
+        if (argc_ > 2) {
+            command.insert(command.end(), it,  argv_.end());
+        }
+
+        int status = exec_command(get_argv(command));
+
+        return status;
+    }
+
+    throw std::logic_error("Not Implemented");
+}
+
+int BuildSystem::check() {
+    const std::vector<std::string>& files = cs_.get_files();
+
+    // First check if executable exists at all. If it doesn't, keep files as they are.
+
+    std::filesystem::path exec_path = cs_.get_exec_name();
+    bool exec_exists = std::filesystem::exists(exec_path);
+
+    if (!exec_exists) {
+        files_ = files;
+        return 0;
+    }
+
+    // Exists path.
+
+    // Now need to loop over all the .cpp files and see if they have been changed after last executable was created.
+
+    stat exec_stat;
+    int exec_stat_status = stat(const_cast<char*>(cs_.get_exec_name().data()), &exec_stat);
+
+    time_t exec_modified_time = exec_stat.st_mtime;
 
 
+    stat file_stat;
+    int count = 0;
+    for (size_t i = 0; i < files.size(); ++i) {
+        int s = stat(const_cast<char*>(files[i].data()), &file_stat);
+        if (file_stat.st_mtime > exec_modified_time) {
+            // was changed, add it.
+            files_.push_back(files[i]);
+            ++count;
+        }
+    }
+
+    if (!count) {
+        // No changes were made to any of the files.
+        std::cout << "No changed detected! No reason to compile\n";
+        return 0;
+    }
+
+    // Now need to go through dependencies.
+
+    return 0;
+}
+
+void BuildSystem::create_dependency_graph() {
+    const std::vector<std::string>& files = cs_.get_files();
+
+    for (size_t i = 0; i < files.size(); ++i) {
+        std::string dep_path = FULL_DEPENDENCY_PATH + '/' + std::to_string(i) + ".d";
+
+        std::ifstream in(dep_path);
+    }
+}
 
 //
 //      Compilation Settings class
