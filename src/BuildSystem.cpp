@@ -13,6 +13,8 @@ inline constexpr std::string COMPILER_NAME_OBJECT_FILE_FLAG = "-o";
 inline constexpr std::string COMPILER_DEPENDENCY_GENERATION_FLAG = "-MMD";
 inline constexpr std::string COMPILER_NAME_DEPENDENCY_FILE_FLAG = "-MF";
 
+inline constexpr std::string BACKSLASH = "\\";
+
 
 BuildSystem::BuildSystem(int argc, char** argv) : argc_(argc) {
     for (char** it = argv; *it != nullptr; ++it) {
@@ -28,10 +30,10 @@ BuildSystem::BuildSystem(int argc, char** argv) : argc_(argc) {
 }
 
 void BuildSystem::run() {
-    check(); // we need to see if files are changed and only compile those (and files that depend on them)
+    // check(); // we need to see if files are changed and only compile those (and files that depend on them)
     create_dependency_graph();
-    build();
-    next(); // if has option such as run, do that.
+    // build();
+    // next(); // if has option such as run, do that.
 }
 
 int BuildSystem::init() {
@@ -107,6 +109,7 @@ int BuildSystem::build() {
 }
 
 int BuildSystem::compile() {
+    files_ = cs_.get_files();
 
     size_t size = files_.size();
 
@@ -314,20 +317,22 @@ int BuildSystem::check() {
         return 0;
     }
 
-    // Exists path.
+    // Path exists.
 
     // Now need to loop over all the .cpp files and see if they have been changed after last executable was created.
 
-    stat exec_stat;
+    struct stat exec_stat{};
     int exec_stat_status = stat(const_cast<char*>(cs_.get_exec_name().data()), &exec_stat);
+    (void)exec_stat_status;
 
     time_t exec_modified_time = exec_stat.st_mtime;
 
 
-    stat file_stat;
+    struct stat file_stat{};
     int count = 0;
     for (size_t i = 0; i < files.size(); ++i) {
         int s = stat(const_cast<char*>(files[i].data()), &file_stat);
+        (void)s;
         if (file_stat.st_mtime > exec_modified_time) {
             // was changed, add it.
             files_.push_back(files[i]);
@@ -348,12 +353,101 @@ int BuildSystem::check() {
 
 void BuildSystem::create_dependency_graph() {
     const std::vector<std::string>& files = cs_.get_files();
+    std::unordered_map<std::string, std::pair<Node*, size_t>> seen;
+
+    for (size_t i = 0; i < files.size(); ++i) {
+        file_deps_.emplace_back(Node(files[i]));
+        seen.insert({file_deps_.back().val, {&file_deps_.back(), i}});
+    }
+
+    std::cout << "finished filling in file_deps_" << std::endl;
 
     for (size_t i = 0; i < files.size(); ++i) {
         std::string dep_path = FULL_DEPENDENCY_PATH + '/' + std::to_string(i) + ".d";
 
         std::ifstream in(dep_path);
+
+        if (!in.is_open()) {
+            std::cerr << "error opening a file " << dep_path << std::endl;
+            return;
+        }
+        // Need to normalize paths for them, so that src/../include doesn't happen.
+        std::string itself;
+        in >> itself; // object file
+        in >> itself; // itself
+        auto itself_it = seen.find(itself);
+        if (itself_it == seen.end()) {
+            std::cerr << "Didn't find file with the name <" << itself << '>' << std::endl;
+            return;
+        }
+        size_t ind = itself_it->second.second;
+
+        std::cout << "FOR THE FILE: " << itself << std::endl;
+        std::string w;
+        while (in >> w) {
+            if (w == BACKSLASH) {
+                continue;
+            }
+            std::cout << "depends on file " << w << std::endl;
+            std::string normalized = normalize_path(w); // check if moving vs nrvo better
+            std::cout << "file normalized " << normalized << std::endl;
+            auto it = seen.find(normalized);
+            if (it == seen.end()) {
+                file_deps_.emplace_back(Node(normalized));
+                seen[file_deps_.back().val] = {&file_deps_.back(), file_deps_.size() - 1};
+            }
+            Node* ptr = &file_deps_.back();
+
+            file_deps_[ind].deps.push_back(ptr);
+        }
+
     }
+
+    for (size_t i = 0; i < file_deps_.size(); ++i) {
+        std::cout << "File " << file_deps_[i].val << " depends on: ";
+        for (size_t j = 0; j < file_deps_[i].deps.size(); ++i) {
+            std::cout << file_deps_[i].deps[j]->val << ", ";
+        }
+        std::cout << '\n';
+    }
+}
+
+std::string BuildSystem::normalize_path(const std::string& path) {
+    std::vector<std::string> s;
+    size_t i = 0;
+    std::string curr;
+    while (i < path.size()) {
+        curr = parse_token(i, path); // check if move vs nrvo is better
+        ++i;
+        if (curr == "..") {
+            s.pop_back();
+            continue;
+        } else if (curr == ".") {
+            continue;
+        } else {
+            s.push_back(curr);
+        }
+    }
+
+    std::string res;
+    for (size_t i = 0; i < s.size(); ++i) {
+        res += s[i];
+        res += '/';
+    }
+    res.pop_back();
+
+    return res;
+}
+
+std::string BuildSystem::parse_token(size_t& i, const std::string& path) {
+    size_t beg = i;
+    while (i < path.size() && path[i] != '/') { ++i; }
+
+    return path.substr(beg, i - beg);
+}
+
+bool BuildSystem::is_header_file(const std::string& path) const {
+    return path.ends_with(".h") || path.ends_with(".hpp");
 }
 
 //

@@ -4,10 +4,13 @@
 #include <fstream>
 #include <filesystem>
 #include <numeric>
+#include <utility>
+#include <unordered_map>
 
 #include <unistd.h> // for posix stuff
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <cstdlib>
 #include <time.h>
 #include <cstring>
 
@@ -17,7 +20,7 @@ struct Node {
     std::vector<Node*> deps;
 
     Node() {}
-    Node(const std::string& v) : val(v)
+    Node(const std::string& v) : val(v) {}
 };
 
 class CompilationSettings {
@@ -44,7 +47,6 @@ private:
 
     std::vector<std::string> pure_file_names_;
 
-    std::vector<Node*> file_dependencies;
 };
 
 
@@ -63,6 +65,10 @@ public:
     int check();
     void create_dependency_graph();
 
+    std::string normalize_path(const std::string& path);
+    std::string parse_token(size_t &i, const std::string& path);
+    bool is_header_file(const std::string& path) const;
+
     void get_object_file(const std::string& file, const std::string& save_to, const std::string& dependency_file_name);
     std::vector<std::string> get_command(const std::string& file, const std::string& save_to, const std::string& dependency_file_name);
     std::vector<char*> get_argv(const std::vector<std::string>& v);
@@ -77,5 +83,7 @@ private:
     std::vector<std::string> files_;
 
     CompilationSettings cs_;
+
+    std::vector<Node> file_deps_;
 };
 
