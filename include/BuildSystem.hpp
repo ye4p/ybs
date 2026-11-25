@@ -17,17 +17,17 @@
 
 struct Node {
     std::string val;
-    std::vector<Node*> deps;
+    std::vector<size_t> deps;
 
-    Node() {}
-    Node(const std::string& v) : val(v) {}
+    // Node() {}
+    explicit Node(const std::string& v) : val(v) {}
 };
 
 class CompilationSettings {
 public:
     CompilationSettings();
     CompilationSettings(const std::string& in);
-    std::string parse_word(const std::string& in, int& i, bool check_bracket);
+    std::string parse_word(const std::string& in, size_t& i, bool check_bracket);
     void print();
 
     const std::string& get_compiler_name() const;
@@ -64,6 +64,8 @@ public:
     int next();
     int check();
     void create_dependency_graph();
+    void match_headers();
+    void display_dependencies() const;
 
     std::string normalize_path(const std::string& path);
     std::string parse_token(size_t &i, const std::string& path);
@@ -85,5 +87,6 @@ private:
     CompilationSettings cs_;
 
     std::vector<Node> file_deps_;
+    std::unordered_map<std::string, size_t> dep_idxs_;
 };
 

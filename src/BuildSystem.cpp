@@ -353,11 +353,11 @@ int BuildSystem::check() {
 
 void BuildSystem::create_dependency_graph() {
     const std::vector<std::string>& files = cs_.get_files();
-    std::unordered_map<std::string, std::pair<Node*, size_t>> seen;
 
     for (size_t i = 0; i < files.size(); ++i) {
         file_deps_.emplace_back(Node(files[i]));
-        seen.insert({file_deps_.back().val, {&file_deps_.back(), i}});
+        std::cout << "file_deps_.back().val: " << file_deps_.back().val << std::endl;
+        dep_idxs_.insert({file_deps_.back().val, i});
     }
 
     std::cout << "finished filling in file_deps_" << std::endl;
@@ -375,38 +375,75 @@ void BuildSystem::create_dependency_graph() {
         std::string itself;
         in >> itself; // object file
         in >> itself; // itself
-        auto itself_it = seen.find(itself);
-        if (itself_it == seen.end()) {
+        auto itself_it = dep_idxs_.find(itself);
+        if (itself_it == dep_idxs_.end()) {
             std::cerr << "Didn't find file with the name <" << itself << '>' << std::endl;
             return;
         }
-        size_t ind = itself_it->second.second;
-
-        std::cout << "FOR THE FILE: " << itself << std::endl;
+        size_t ind = itself_it->second;
+        std::cout << "FOR THE FILE: " << itself << " and its index " << ind << std::endl;
         std::string w;
         while (in >> w) {
             if (w == BACKSLASH) {
-                continue;
+                continue; 
             }
             std::cout << "depends on file " << w << std::endl;
             std::string normalized = normalize_path(w); // check if moving vs nrvo better
             std::cout << "file normalized " << normalized << std::endl;
-            auto it = seen.find(normalized);
-            if (it == seen.end()) {
+            auto it = dep_idxs_.find(normalized);
+            if (it == dep_idxs_.end()) {
+                std::cout << "NOT FOUND " << normalized << std::endl;
                 file_deps_.emplace_back(Node(normalized));
-                seen[file_deps_.back().val] = {&file_deps_.back(), file_deps_.size() - 1};
+                dep_idxs_.insert({file_deps_.back().val, file_deps_.size() - 1});
             }
-            Node* ptr = &file_deps_.back();
+            auto new_it = dep_idxs_.find(normalized);
 
-            file_deps_[ind].deps.push_back(ptr);
+            if (new_it == dep_idxs_.end()) {
+                std::cerr << "ERROR: didn't find the file " << normalized << std::endl;
+                return;
+            }
+            // Dangling pointer. file_deps_ could have realocated, but pointer still points there.
+
+            file_deps_[ind].deps.push_back(new_it->second);
         }
 
     }
 
+    display_dependencies();
+
+    match_headers();
+}
+
+void BuildSystem::match_headers() {
+    std::unordered_map<size_t, size_t> header_to_source;
+
+    for (size_t i = 0; i < file_deps_.size(); ++i) {
+        const std::string& header = file_deps_[i];
+        if (!is_header_file(header)) continue;
+
+        auto header_it = dep_idxs_.find(header);
+
+        std::string source = header_to_source_string(header);
+
+        auto it = dep_idxs_.find(source);
+        if (it == dep_idxs_.end()) continue;
+
+        header_to_source.insert(header_it->second, it->second);
+    }
+
+    for (const auto [header_idx, source_idx] : header_to_source) {
+        for (size_t i = 0; i < file_deps_.size(); ++i) {
+            for (size_t j = 0; j < file_deps_[i].deps.size(); ++j) {
+            }
+        }
+    }
+}
+
+void BuildSystem::display_dependencies() const {
     for (size_t i = 0; i < file_deps_.size(); ++i) {
         std::cout << "File " << file_deps_[i].val << " depends on: ";
-        for (size_t j = 0; j < file_deps_[i].deps.size(); ++i) {
-            std::cout << file_deps_[i].deps[j]->val << ", ";
+        for (size_t j = 0; j < file_deps_[i].deps.size(); ++j) {
+            std::cout << file_deps_[file_deps_[i].deps[j]].val << ", ";
         }
         std::cout << '\n';
     }
@@ -450,6 +487,25 @@ bool BuildSystem::is_header_file(const std::string& path) const {
     return path.ends_with(".h") || path.ends_with(".hpp");
 }
 
+std::string BuildSystem::header_to_source_string(const std::string& path) const {
+    constexpr std::string ending = cs_.get_compiler_name().ends_with("++") ? "cpp" : "c";
+
+    size_t dot_idx = 0;
+
+    for (size_t i = path.size() - 1; i > 1; --i) {
+        if (path[i] == '.') {
+            dot_idx = i;
+            break;
+        }
+    }
+
+    if (dot_idx == 0) {
+        throw std::runtime_error("File extension not found > " + path + '\n');;
+    }
+
+    return path.substr(0, dot_idx + 1) + ending;
+}
+
 //
 //      Compilation Settings class
 //
@@ -457,7 +513,7 @@ bool BuildSystem::is_header_file(const std::string& path) const {
 CompilationSettings::CompilationSettings() {}
 
 CompilationSettings::CompilationSettings(const std::string& in) {
-    int i = 0;
+    size_t i = 0;
 
     compiler_ = parse_word(in, i, false);
 
@@ -484,9 +540,9 @@ CompilationSettings::CompilationSettings(const std::string& in) {
     clean_names();
 }
 
-std::string CompilationSettings::parse_word(const std::string& in, int& i, bool check_bracket) {
+std::string CompilationSettings::parse_word(const std::string& in, size_t& i, bool check_bracket) {
     int beg = i;
-    while (in[i] != ' ' && (check_bracket ? in[i] != ']' : true)) { ++i; }
+    while (i < in.size() && in[i] != ' ' && (check_bracket ? in[i] != ']' : true)) { ++i; }
 
     return in.substr(beg, i - beg);
 }
