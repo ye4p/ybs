@@ -15,6 +15,8 @@ inline constexpr std::string COMPILER_NAME_DEPENDENCY_FILE_FLAG = "-MF";
 
 inline constexpr std::string BACKSLASH = "\\";
 
+inline constexpr std::string BUILD_DATA_FILE_PATH = "bs/temp.txt";
+
 
 BuildSystem::BuildSystem(int argc, char** argv) : argc_(argc) {
     for (char** it = argv; *it != nullptr; ++it) {
@@ -23,17 +25,31 @@ BuildSystem::BuildSystem(int argc, char** argv) : argc_(argc) {
 
     int init_status = init();
     if (init_status) {
-        // handle failed initialization
+        std::runtime_error("Failed initialization\n");
     }
 
     std::cout << "initialized successfully" << std::endl;
 }
 
 void BuildSystem::run() {
-    // check(); // we need to see if files are changed and only compile those (and files that depend on them)
+    //auto start = std::chrono::steady_clock::now();
+
+    check();
+    //std::thread worker(&BuildSystem::check, this); // we need to see if files are changed and only compile those (and files that depend on them)
     create_dependency_graph();
-    // build();
-    // next(); // if has option such as run, do that.
+    // worker.join();
+
+
+    // now we need to look at both dependencies vector and at the files_ to see which files need to be recompiled.
+    fill_dependencies();
+
+    display_files_to_compile();
+
+    //auto end = std::chrono::steady_clock::now();
+    //std::chrono::duration<double> elapsed = end - start;
+    //std::cout << elapsed.count() << " seconds\n";
+    build();
+    next(); // if has option such as run, do that.
 }
 
 int BuildSystem::init() {
@@ -91,6 +107,9 @@ int BuildSystem::read_markup_file() {
 }
 
 int BuildSystem::build() {
+    if (files_.empty()) {
+        return 0;
+    }
     int compile_status = compile();
 
     if (compile_status) {
@@ -109,8 +128,7 @@ int BuildSystem::build() {
 }
 
 int BuildSystem::compile() {
-    files_ = cs_.get_files();
-
+    const std::vector<std::string> all_src_files = cs_.get_files();
     size_t size = files_.size();
 
     // for (size_t i = 0; i < files.size(); ++i) {
@@ -120,19 +138,31 @@ int BuildSystem::compile() {
     std::vector<int> process_ids(size, 0); // to see which process compiles which file
 
     long max_processes = sysconf(_SC_CHILD_MAX);
+    // UP NEXT:
+    // make smarter compilation system, so that all available processes remain busy at all times.
 
     while (std::accumulate(is_done.begin(), is_done.end(), 0) != static_cast<int>(size)) {
         size_t launched_processes{};
         for (size_t i = 0; i < static_cast<size_t>(max_processes); ++i) {
             if (i >= size) break; // already have enough processes running.
             if (is_done[i]) continue;
+            // need to get index of a file of how it would be from cs_.get_files() so that enumeration of object files is consistent
+
+            size_t old_idx = [&]() {
+                for (size_t j = 0; j < all_src_files.size(); ++j) {
+                    if (files_[i] == all_src_files[j]) {
+                        return j;
+                    }
+                }
+                return ULONG_MAX;
+            }();
 
             pid_t pid = fork();
 
             if (pid == 0) 
             {
                 // Child process
-                std::string str = std::to_string(i);
+                std::string str = std::to_string(old_idx);
                 const std::string save_to = FULL_INTERMEDIATE_PATH + '/' + str + ".o";
                 const std::string dependency_file_name = FULL_DEPENDENCY_PATH + '/' + str + ".d";
                 get_object_file(files_[i], save_to, dependency_file_name);
@@ -304,6 +334,10 @@ int BuildSystem::next() {
     throw std::logic_error("Not Implemented");
 }
 
+void BuildSystem::rebuild_all() {
+    files_ = cs_.get_files();
+}
+
 int BuildSystem::check() {
     const std::vector<std::string>& files = cs_.get_files();
 
@@ -313,17 +347,27 @@ int BuildSystem::check() {
     bool exec_exists = std::filesystem::exists(exec_path);
 
     if (!exec_exists) {
-        files_ = files;
+        rebuild_all();
         return 0;
     }
 
     // Path exists.
 
+    // Now check build_data_file
+
+    int read_status = read_build_data_file();
+
+    if (read_status) {
+        rebuild_all();
+        std::cout << "REBUILDING DATA FILE\n";
+        update_build_data_file();
+        return 0;
+    }
+
     // Now need to loop over all the .cpp files and see if they have been changed after last executable was created.
 
     struct stat exec_stat{};
-    int exec_stat_status = stat(const_cast<char*>(cs_.get_exec_name().data()), &exec_stat);
-    (void)exec_stat_status;
+    stat(const_cast<char*>(cs_.get_exec_name().data()), &exec_stat);
 
     time_t exec_modified_time = exec_stat.st_mtime;
 
@@ -332,7 +376,12 @@ int BuildSystem::check() {
     int count = 0;
     for (size_t i = 0; i < files.size(); ++i) {
         int s = stat(const_cast<char*>(files[i].data()), &file_stat);
-        (void)s;
+
+        if (s) {
+            rebuild_all();
+            return 0;
+        }
+
         if (file_stat.st_mtime > exec_modified_time) {
             // was changed, add it.
             files_.push_back(files[i]);
@@ -351,7 +400,41 @@ int BuildSystem::check() {
     return 0;
 }
 
+int BuildSystem::read_build_data_file() {
+    std::ifstream in(BUILD_DATA_FILE_PATH);
+
+    if (!in.is_open()) {
+        return 1;
+    }
+
+    std::vector<std::string> old_flags;
+    std::string str;
+    while (in >> str) {
+        old_flags.push_back(str);
+    }
+
+    return old_flags != cs_.get_compiler_options();
+}
+
+void BuildSystem::update_build_data_file() {
+    std::ofstream out(BUILD_DATA_FILE_PATH);
+
+    if (!out.is_open()) {
+        std::cerr << "Error creating build data file\n";
+        return;
+    }
+
+    std::string res;
+    for (const std::string& s : cs_.get_compiler_options()) {
+        res += s;
+        res += ' ';
+    }
+
+    out << res;
+}
+
 void BuildSystem::create_dependency_graph() {
+    if (files_.empty()) return;
     const std::vector<std::string>& files = cs_.get_files();
 
     for (size_t i = 0; i < files.size(); ++i) {
@@ -388,12 +471,12 @@ void BuildSystem::create_dependency_graph() {
                 continue; 
             }
             std::cout << "depends on file " << w << std::endl;
-            std::string normalized = normalize_path(w); // check if moving vs nrvo better
+            std::string normalized = normalize_path(w);
             std::cout << "file normalized " << normalized << std::endl;
             auto it = dep_idxs_.find(normalized);
             if (it == dep_idxs_.end()) {
                 std::cout << "NOT FOUND " << normalized << std::endl;
-                file_deps_.emplace_back(Node(normalized));
+                file_deps_.emplace_back(normalized);
                 dep_idxs_.insert({file_deps_.back().val, file_deps_.size() - 1});
             }
             auto new_it = dep_idxs_.find(normalized);
@@ -412,13 +495,15 @@ void BuildSystem::create_dependency_graph() {
     display_dependencies();
 
     match_headers();
+
+    display_dependencies();
 }
 
 void BuildSystem::match_headers() {
     std::unordered_map<size_t, size_t> header_to_source;
 
     for (size_t i = 0; i < file_deps_.size(); ++i) {
-        const std::string& header = file_deps_[i];
+        const std::string& header = file_deps_[i].val;
         if (!is_header_file(header)) continue;
 
         auto header_it = dep_idxs_.find(header);
@@ -428,12 +513,16 @@ void BuildSystem::match_headers() {
         auto it = dep_idxs_.find(source);
         if (it == dep_idxs_.end()) continue;
 
-        header_to_source.insert(header_it->second, it->second);
+        header_to_source.insert({header_it->second, it->second});
     }
 
-    for (const auto [header_idx, source_idx] : header_to_source) {
+    for (const auto& [header_idx, source_idx] : header_to_source) {
         for (size_t i = 0; i < file_deps_.size(); ++i) {
             for (size_t j = 0; j < file_deps_[i].deps.size(); ++j) {
+                if (file_deps_[i].deps[j] != header_idx) continue;
+
+                file_deps_[i].deps.push_back(source_idx);
+                std::cout << "pushed " << file_deps_[source_idx].val << " into " << file_deps_[i].val << std::endl;
             }
         }
     }
@@ -449,12 +538,20 @@ void BuildSystem::display_dependencies() const {
     }
 }
 
+void BuildSystem::display_files_to_compile() const {
+    std::cout << "FILES TO COMPILE: \n";
+    for (size_t i = 0; i < files_.size(); ++i) {
+        std::cout << files_[i] << ", ";
+    }
+    std::cout << "DONE\n";
+}
+
 std::string BuildSystem::normalize_path(const std::string& path) {
     std::vector<std::string> s;
     size_t i = 0;
-    std::string curr;
+
     while (i < path.size()) {
-        curr = parse_token(i, path); // check if move vs nrvo is better
+        std::string curr = parse_token(i, path);
         ++i;
         if (curr == "..") {
             s.pop_back();
@@ -462,7 +559,7 @@ std::string BuildSystem::normalize_path(const std::string& path) {
         } else if (curr == ".") {
             continue;
         } else {
-            s.push_back(curr);
+            s.push_back(std::move(curr));
         }
     }
 
@@ -488,7 +585,31 @@ bool BuildSystem::is_header_file(const std::string& path) const {
 }
 
 std::string BuildSystem::header_to_source_string(const std::string& path) const {
-    constexpr std::string ending = cs_.get_compiler_name().ends_with("++") ? "cpp" : "c";
+    int forward_slash_idx = -1;
+    for (int i = path.size() - 1; i > 0; --i) {
+        if (path[i] == '/') {
+            forward_slash_idx = i;
+            break;
+        }
+    }
+
+    if (forward_slash_idx <= 0) {
+        return change_ending(path);
+    } else {
+        std::string ending = change_ending(path.substr(forward_slash_idx));
+        for (size_t i = 0; i < file_deps_.size(); ++i) {
+            if (file_deps_[i].val.ends_with(ending)) {
+                return file_deps_[i].val;
+            }
+        }
+
+        std::string err = "ERROR: no matching source file was found from a header file " + path;
+        throw std::runtime_error(err);
+    }
+}
+
+std::string BuildSystem::change_ending(const std::string& path) const {
+    const std::string ending = cs_.get_compiler_name().ends_with("++") ? "cpp" : "c";
 
     size_t dot_idx = 0;
 
@@ -506,6 +627,37 @@ std::string BuildSystem::header_to_source_string(const std::string& path) const 
     return path.substr(0, dot_idx + 1) + ending;
 }
 
+
+void BuildSystem::fill_dependencies() {
+    size_t changed_files = files_.size();
+
+    for (size_t i = 0; i < changed_files; ++i) {
+        add_files_that_depend_on(files_[i]);
+    }
+}
+
+void BuildSystem::add_files_that_depend_on(const std::string path) {
+    for (size_t i = 0; i < file_deps_.size(); ++i) {
+        for (size_t j = 0; j < file_deps_[i].deps.size(); ++j) {
+            if (is_header_file(file_deps_[i].val)) break;
+
+            const size_t ind = file_deps_[i].deps[j];
+
+            if (file_deps_[ind].val == path && !is_in_files(file_deps_[i].val)) {
+                files_.push_back(file_deps_[i].val);
+                break;
+            }
+        }
+    }
+}
+
+bool BuildSystem::is_in_files(const std::string& path) const {
+    const std::vector<std::string>& fs = files_;
+    return std::find(fs.begin(), fs.end(), path) != fs.end();
+}
+
+
+
 //
 //      Compilation Settings class
 //
@@ -517,20 +669,23 @@ CompilationSettings::CompilationSettings(const std::string& in) {
 
     compiler_ = parse_word(in, i, false);
 
-
     while (in[i] != '[') { ++i; }
 
+    ++i;
     do {
-        ++i;
         files_.emplace_back(parse_word(in, i, true));
+        skip_whitespace(in, i);
     } while (in[i] != ']');
 
     while (in[i] != '[') { ++i; }
 
-    do {
-        ++i;
-        compiler_options_.emplace_back(parse_word(in, i, true));
-    } while (in[i] != ']');
+    ++i;
+    if (in[i] != ']') {
+        do {
+            compiler_options_.emplace_back(parse_word(in, i, true));
+            skip_whitespace(in, i);
+        } while (in[i] != ']');
+    }
 
     ++i;
     while (in[i] == ' ') { ++i; }
@@ -538,6 +693,10 @@ CompilationSettings::CompilationSettings(const std::string& in) {
     exec_name_ = parse_word(in, i, false);
 
     clean_names();
+}
+
+void CompilationSettings::skip_whitespace(const std::string& in, size_t &i) {
+    while (in[i] == ' ') { ++i; }
 }
 
 std::string CompilationSettings::parse_word(const std::string& in, size_t& i, bool check_bracket) {

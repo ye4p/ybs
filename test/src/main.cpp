@@ -10,6 +10,7 @@ int main(int argc, char** argv) {
     e.model_ = std::string("v8");
     e.say_model();
     Car c;
+
     c.e_ = e;
     c.gas();
 }

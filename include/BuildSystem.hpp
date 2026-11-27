@@ -6,6 +6,8 @@
 #include <numeric>
 #include <utility>
 #include <unordered_map>
+#include <thread>
+#include <chrono>
 
 #include <unistd.h> // for posix stuff
 #include <sys/wait.h>
@@ -27,6 +29,7 @@ class CompilationSettings {
 public:
     CompilationSettings();
     CompilationSettings(const std::string& in);
+    void skip_whitespace(const std::string& in, size_t &i);
     std::string parse_word(const std::string& in, size_t& i, bool check_bracket);
     void print();
 
@@ -62,19 +65,32 @@ public:
     int link();
 
     int next();
+    void rebuild_all();
     int check();
+    int read_build_data_file();
+    void update_build_data_file();
+
     void create_dependency_graph();
     void match_headers();
-    void display_dependencies() const;
+
+    void fill_dependencies();
+    void add_files_that_depend_on(const std::string path);
 
     std::string normalize_path(const std::string& path);
     std::string parse_token(size_t &i, const std::string& path);
     bool is_header_file(const std::string& path) const;
+    std::string header_to_source_string(const std::string& path) const;
+    std::string change_ending(const std::string& path) const;
+
+    void display_dependencies() const;
+    void display_files_to_compile() const;
+    bool is_in_files(const std::string& path) const;
 
     void get_object_file(const std::string& file, const std::string& save_to, const std::string& dependency_file_name);
     std::vector<std::string> get_command(const std::string& file, const std::string& save_to, const std::string& dependency_file_name);
     std::vector<char*> get_argv(const std::vector<std::string>& v);
     int exec_command(const std::vector<char*>& args);
+    void dependencies_cleanup();
 
     // Helpers
     // const std::string save_to get_save_to_path(const std::string
