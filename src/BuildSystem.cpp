@@ -131,38 +131,43 @@ int BuildSystem::compile() {
     const std::vector<std::string> all_src_files = cs_.get_files();
     size_t size = files_.size();
 
-    // for (size_t i = 0; i < files.size(); ++i) {
-    //     std::cout << "file: " << files[i] << std::endl;
-    // }
     std::vector<int> is_done(size, 0);
     std::vector<int> process_ids(size, 0); // to see which process compiles which file
 
-    long max_processes = sysconf(_SC_CHILD_MAX);
+    long max_processes = std::thread::hardware_concurrency();
+    std::cout << "maximum processes: " << max_processes << std::endl;
     // UP NEXT:
     // make smarter compilation system, so that all available processes remain busy at all times.
 
-    while (std::accumulate(is_done.begin(), is_done.end(), 0) != static_cast<int>(size)) {
+    std::queue<size_t> q;
+
+    auto sum = [&](){
+        return std::accumulate(is_done.begin(), is_done.end(), 0);
+    };
+
+    auto old_idx = [&](size_t i__) {
+        for (size_t j = 0; j < all_src_files.size(); ++j) {
+            if (files_[i__] == all_src_files[j]) {
+                return j;
+            }
+        }
+        return ULONG_MAX;
+    };
+    size_t done_counter = 0;
+
+    while (done_counter != size) {
+        std::cout << "done " << sum() << " out of " << size << std::endl;
         size_t launched_processes{};
-        for (size_t i = 0; i < static_cast<size_t>(max_processes); ++i) {
-            if (i >= size) break; // already have enough processes running.
-            if (is_done[i]) continue;
-            // need to get index of a file of how it would be from cs_.get_files() so that enumeration of object files is consistent
+        size_t i = 0;
 
-            size_t old_idx = [&]() {
-                for (size_t j = 0; j < all_src_files.size(); ++j) {
-                    if (files_[i] == all_src_files[j]) {
-                        return j;
-                    }
-                }
-                return ULONG_MAX;
-            }();
-
+        auto launch_process = [&](){
             pid_t pid = fork();
 
             if (pid == 0) 
             {
                 // Child process
-                std::string str = std::to_string(old_idx);
+                // need to get index of a file of how it would be from cs_.get_files() so that enumeration of object files is consistent
+                std::string str = std::to_string(old_idx(i));
                 const std::string save_to = FULL_INTERMEDIATE_PATH + '/' + str + ".o";
                 const std::string dependency_file_name = FULL_DEPENDENCY_PATH + '/' + str + ".d";
                 get_object_file(files_[i], save_to, dependency_file_name);
@@ -182,21 +187,39 @@ int BuildSystem::compile() {
             {
                 // Parent process.
                 process_ids[i] = static_cast<int>(pid);
+                std::cout << "started " << i  << " with id << " << pid << std::endl;
                 ++launched_processes;
+                q.push(i);
+                ++i;
             }
+        };
+
+        while (i < size && launched_processes < static_cast<size_t>(max_processes)) {
+            if (i >= size) break; // already have enough processes running.
+            if (is_done[i] || process_ids[i]) { // this proces is running or already executed
+                ++i;
+                continue;
+            }
+
+            launch_process();
         }
-        std::cout << " Waiting for children to finish\n";
 
 
-        for (size_t i = 0; i < launched_processes; ++i) {
-            if (process_ids[i] == 0) continue;
-            pid_t pid = waitpid(process_ids[i], nullptr, 0);
+        while (launched_processes) {
+        // for (size_t i = 0; i < launched_processes; ++i) {
+            size_t idx = q.front();
+            q.pop();
+            if (process_ids[idx] == 0) continue;
+            pid_t pid = waitpid(process_ids[idx], nullptr, 0);
             if (pid > 0) {
                 // Process has done its job successfully.
-                is_done[i] = 1;
-                std::cout << "process " << static_cast<int>(pid) << " did its job successfully\n";
+                is_done[idx] = 1;
+                ++done_counter;
+                std::cout << "idx " << i << " process " << static_cast<int>(pid) << " did its job successfully\n";
             }
-            process_ids[i] = 0;
+            process_ids[idx] = 0;
+
+            --launched_processes;
         }
     }
 

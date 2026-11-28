@@ -2,5 +2,5 @@
 
 
 void Engine::say_model() {
-    std::cout << model_ << "\n";
+    std::cout << model_ << " \n";
 }

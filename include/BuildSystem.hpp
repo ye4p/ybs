@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <thread>
 #include <chrono>
+#include <queue>
 
 #include <unistd.h> // for posix stuff
 #include <sys/wait.h>
