@@ -1,5 +1,4 @@
-# This is my build system that I built for my own use.
-Linux only.
+# Build system that prioritizes simplicity and ease of use.
 
 
 REQUIREMENTS:
